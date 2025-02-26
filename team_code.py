@@ -11,7 +11,6 @@
 
 import numpy as np
 import os
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 import sys
 
 from helper_code import *
