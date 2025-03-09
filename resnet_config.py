@@ -16,6 +16,8 @@ class Config(object):
         self.normalization = 'bn'
         self.dropout = 0.0
         self.n_groups = 16
+        
+        self.latent_dim_add = 64
 
         # dataset and loader params
         self.inplen = 8.96

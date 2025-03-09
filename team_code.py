@@ -84,7 +84,8 @@ class Model(object):
         for i in range(5):
             # make resnet model
             network = Network(input_channels=cfg.leads, kernel=cfg.kernel, width=cfg.width, 
-                              normalization=cfg.normalization, dropout=cfg.dropout, n_groups=cfg.n_groups)
+                              normalization=cfg.normalization, dropout=cfg.dropout, n_groups=cfg.n_groups,
+                              input_feas_add=2, latent_dim_add=cfg.latent_dim_add)
             
             # to device
             network = network.to(device=self.device)
@@ -157,6 +158,24 @@ class Model(object):
         # input for network
         X = torch.stack(signals, dim=0)
         
+        # additional input for network
+        comments = fields['comments']
+        #print(comments)
+        age, gender = -1, -1
+        for comment in comments:
+            param_name, value_str = comment.split(':')
+            param_name, value_str = param_name.strip(), value_str.strip()            
+            if param_name == 'Age':
+                age = int(value_str) / 100
+            if param_name == 'Sex':
+                if value_str == 'Female':
+                    gender = 0
+                elif value_str == 'Male':
+                    gender = 1
+                    
+        x_add_arr = np.column_stack([np.array([age] * n_repeats), np.array([gender] * n_repeats)])
+        X_add = torch.as_tensor(x_add_arr, dtype=torch.float32, device=self.device)
+        
         # get fold for eval. mode
         if self.eval_mode:
             if record.count('/') > 0:
@@ -177,7 +196,7 @@ class Model(object):
                 if self.eval_mode and fold != -1 and i != fold:
                     continue
                 network = self.networks[i]        
-                output = network(X)
+                output = network(X, X_add)
                 output_s = torch.sigmoid(output)
                 prob_for_net = torch.mean(output_s) 
                 probs.append(prob_for_net.item())
