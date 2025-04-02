@@ -32,7 +32,9 @@ def filter_signal(X, fs):
     # notch filter
     # mne requires signal ion shape (n_channels, n_ts)
     # filtracia frekvencie striedaveho prudu (v Brazilii 60 Hz)
-    X = mne.filter.notch_filter(X.T, fs, 60, n_jobs=1, verbose='error')
+    X = X.T
+    X = mne.filter.notch_filter(X, fs, 50, n_jobs=1, verbose='error')
+    X = mne.filter.notch_filter(X, fs, 60, n_jobs=1, verbose='error')
         
     # bandpass filter
     X = mne.filter.filter_data(X, fs, 0.1, 30.0, n_jobs=1, verbose='error')    
@@ -45,6 +47,7 @@ def standardize_signal(signal):
     s = signal.std(axis=0)
     s[s == 0] = 1
     signal = (signal - m) / s
+    #print(m, s)
     return signal
 
 # zmena frekvencie

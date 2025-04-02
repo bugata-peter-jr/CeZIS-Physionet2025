@@ -66,7 +66,8 @@ class Model(object):
         
         # networks
         self.networks = []
-        
+        self.networks_d = []
+
         # eval mode
         self.eval_mode = eval_mode
         if self.eval_mode:
@@ -80,20 +81,20 @@ class Model(object):
         
         pretrained_folder = './pretrained'
                 
-        # create and load networks 
+        # create and load networks - classifier
         for i in range(5):
+
             # make resnet model
             network = Network(input_channels=cfg.leads, kernel=cfg.kernel, width=cfg.width, 
-                              normalization=cfg.normalization, dropout=cfg.dropout, n_groups=cfg.n_groups,
-                              input_feas_add=2, latent_dim_add=cfg.latent_dim_add)
-            
+                              normalization=cfg.normalization, dropout=cfg.dropout, n_groups=cfg.n_groups)
+
             # to device
             network = network.to(device=self.device)
            
             # to evaluation mode
             network.eval()
             
-            fname = pretrained_folder + '/' + 'weights{:d}.h5'.format(i)
+            fname = pretrained_folder + '/classifier/weights{:d}.h5'.format(i)
             try:
                 state_dict = torch.load(fname, map_location=self.device)
                 network.load_state_dict(state_dict, strict=True)
@@ -102,6 +103,29 @@ class Model(object):
                 exit(-1)
             
             self.networks.append(network) 
+
+        # create and load networks - discriminator
+        for i in range(5):
+            # make resnet model
+            network_d = Network(input_channels=cfg.leads, kernel=cfg.kernel, width=cfg.width, 
+                              normalization=cfg.normalization, dropout=cfg.dropout, n_groups=cfg.n_groups)
+            
+            # to device
+            network_d = network_d.to(device=self.device)
+           
+            # to evaluation mode
+            network_d.eval()
+            
+            fname = pretrained_folder + '/discriminator/weights{:d}.h5'.format(i)
+            try:
+                state_dict = torch.load(fname, map_location=self.device)
+                network_d.load_state_dict(state_dict, strict=True)
+            except:
+                print('Weights file: {:s} not available.'.format(fname))
+                exit(-1)
+            
+            self.networks_d.append(network_d) 
+
 
     # predict
     def predict(self, record):
@@ -113,12 +137,13 @@ class Model(object):
         orig_signal, fields = load_signals(record)
         #print('orig signal.shape:', orig_signal.shape)
         
-        # odfiltrovanie frekvencie elektrickej siete a sumu
+        # filter utility frequency
         fs = fields['fs']
         preproc_signal = filter_signal(orig_signal, fs)
         
         # resample
         if fs != cfg.fs:
+            #print(cfg.fs)
             preproc_signal = change_frequency(preproc_signal, fs, cfg.fs, poly=False)
         
         # standardization
@@ -126,11 +151,13 @@ class Model(object):
             preproc_signal = standardize_signal(preproc_signal)
             
         inplen = int(cfg.inplen * cfg.fs)
+        inplen_d = int(6.4 * cfg.fs)
         siglen, n_leads = preproc_signal.shape
         #print('preproc signal.shape:', preproc_signal.shape)
         
         n_repeats = cfg.test_n_reps
         signals = []
+        signals_d = []
         # n_repeats slices
         for j in range(n_repeats):
             # deterministic offset
@@ -154,27 +181,37 @@ class Model(object):
             
             signal_t = torch.as_tensor(signal, dtype=torch.float32, device=self.device)
             signals.append(signal_t)
+
+            # deterministic offset
+            if siglen > inplen_d:
+                if n_repeats > 1:
+                    offset = int((siglen-inplen_d)/(n_repeats - 1)) * j
+                else:
+                    offset = int((siglen-inplen_d)/2)     
+                signal_d = preproc_signal[offset:offset+inplen_d,:]            
+            # padding
+            else:
+                k = inplen_d - siglen
+                if n_repeats > 1:
+                    k1 = int(k/(n_repeats - 1)) * j
+                else:
+                    k1 = int(k/2) 
+                k2 = k - k1
+                signal_d = np.concatenate([np.zeros(shape=(k1, n_leads)), preproc_signal, np.zeros(shape=(k2, n_leads))]) 
+                
+            signal_d = signal_d.T
+            
+            signal_td = torch.as_tensor(signal_d, dtype=torch.float32, device=self.device)
+            signals_d.append(signal_td)
                         
-        # input for network
+        # input for network - classifier
         X = torch.stack(signals, dim=0)
-        
-        # additional input for network
-        comments = fields['comments']
-        #print(comments)
-        age, gender = -1, -1
-        for comment in comments:
-            param_name, value_str = comment.split(':')
-            param_name, value_str = param_name.strip(), value_str.strip()            
-            if param_name == 'Age':
-                age = int(value_str) / 100
-            if param_name == 'Sex':
-                if value_str == 'Female':
-                    gender = 0
-                elif value_str == 'Male':
-                    gender = 1
-                    
-        x_add_arr = np.column_stack([np.array([age] * n_repeats), np.array([gender] * n_repeats)])
-        X_add = torch.as_tensor(x_add_arr, dtype=torch.float32, device=self.device)
+        #print(X.shape)
+
+        # input for network - discriminator
+        X_d = torch.stack(signals_d, dim=0)
+        #X_d = X[:,:,:inplen_d]
+        #print(X_d.shape)
         
         # get fold for eval. mode
         if self.eval_mode:
@@ -188,7 +225,7 @@ class Model(object):
         else:
             fold = -1
         
-        # prediction of all networks 
+        # prediction of all networks - classifier
         # or one network in eval. mode
         with torch.no_grad():
             probs = []       
@@ -196,13 +233,36 @@ class Model(object):
                 if self.eval_mode and fold != -1 and i != fold:
                     continue
                 network = self.networks[i]        
-                output = network(X, X_add)
+                output = network(X)
                 output_s = torch.sigmoid(output)
                 prob_for_net = torch.mean(output_s) 
                 probs.append(prob_for_net.item())
             
         # get final prob and binary output
         final_prob = sum(probs) / len(probs)
+        #print('probs:', probs)
+        #print('final prob:', final_prob)
+
+        # prediction of all networks - discriminator 
+        # or one network in eval. mode
+        with torch.no_grad():
+            probs_d = []       
+            for i in range(len(self.networks_d)):
+                if self.eval_mode and fold != -1 and i != fold:
+                    continue
+                network_d = self.networks_d[i]        
+                output_d = network_d(X_d)
+                output_sd = torch.sigmoid(output_d)
+                prob_for_net_d = torch.mean(output_sd) 
+                probs_d.append(prob_for_net_d.item())
+        brazil_prob = sum(probs_d) / len(probs_d)
+        #print('probs_d:', probs_d)
+        #print('brazil prob:', brazil_prob)
+        
+        if brazil_prob < 0.5:
+            final_prob *= 0.001
+        #print('final prob (corrected):', final_prob)
+
         binary_output = final_prob >= 0.5
         return binary_output, final_prob
             
