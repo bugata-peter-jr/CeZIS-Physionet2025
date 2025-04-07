@@ -17,6 +17,8 @@ class Config(object):
         self.dropout = 0.0
         self.n_groups = 16
 
+        self.final_dim = 64
+
         # dataset and loader params
         self.inplen = 8.96
         self.fs = 200

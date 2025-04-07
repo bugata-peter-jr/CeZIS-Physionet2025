@@ -17,7 +17,7 @@ from helper_code import *
 
 import torch
 from resnet_config import Config
-from network import Network
+from network import Network, NetworkExt
 from utils import filter_signal, change_frequency, standardize_signal
 
 import pandas as pd
@@ -56,6 +56,56 @@ def run_model(record, model, verbose):
 #
 ################################################################################
 
+def get_age_group(header):
+    
+    age = get_age(header)
+    if not np.isnan(age) and age > -1:
+        age = np.clip(age, 20, 90)
+    
+    age_group = 0
+    if age >= 20 and age <= 24:
+        age_group = 1
+    if age >= 25 and age <= 29:
+        age_group = 2
+    if age >= 30 and age <= 34:
+        age_group = 3        
+    if age >= 35 and age <= 39:
+        age_group = 4    
+    if age >= 40 and age <= 44:
+        age_group = 5    
+    if age >= 45 and age <= 49:
+        age_group = 6    
+    if age >= 50 and age <= 54:
+        age_group = 7    
+    if age >= 55 and age <= 59:
+        age_group = 8            
+    if age >= 60 and age <= 64:
+        age_group = 9    
+    if age >= 65 and age <= 69:
+        age_group = 10        
+    if age >= 70 and age <= 74:
+        age_group = 11 
+    if age >= 75 and age <= 79:
+        age_group = 12 
+    if age >= 80 and age <= 84:
+        age_group = 13 
+    if age >= 85 and age <= 89:
+        age_group = 14
+    if age >= 90:
+        age_group = 15
+        
+    return age_group
+
+def get_gender(header):
+    sex = get_sex(header)
+    
+    if sex == 'Female':
+        return 0
+    elif sex == 'Male':
+        return 1
+    else:
+        return 2    
+
 class Model(object):
     def __init__(self, eval_mode=False):
         # configuration
@@ -85,8 +135,9 @@ class Model(object):
         for i in range(5):
 
             # make resnet model
-            network = Network(input_channels=cfg.leads, kernel=cfg.kernel, width=cfg.width, 
-                              normalization=cfg.normalization, dropout=cfg.dropout, n_groups=cfg.n_groups)
+            network = NetworkExt(input_channels=cfg.leads, kernel=cfg.kernel, width=cfg.width, 
+                              normalization=cfg.normalization, dropout=cfg.dropout, n_groups=cfg.n_groups,
+                              n_cats_sex=3, n_cats_age=16, final_dim=cfg.final_dim)
 
             # to device
             network = network.to(device=self.device)
@@ -206,12 +257,23 @@ class Model(object):
                         
         # input for network - classifier
         X = torch.stack(signals, dim=0)
-        #print(X.shape)
+        #print(X)
+        
+        # additional inputs for classifier
+        header = load_header(record)
+        
+        age_group = get_age_group(header)
+        age_group = [age_group] * n_repeats
+        X_age_group = torch.as_tensor(age_group, dtype=torch.long, device=self.device)
+        #print(X_age_group)
+        
+        gender = get_gender(header)
+        gender = [gender] * n_repeats
+        X_gender = torch.as_tensor(gender, dtype=torch.long, device=self.device)
 
         # input for network - discriminator
         X_d = torch.stack(signals_d, dim=0)
-        #X_d = X[:,:,:inplen_d]
-        #print(X_d.shape)
+        #print(X_d)
         
         # get fold for eval. mode
         if self.eval_mode:
@@ -233,7 +295,7 @@ class Model(object):
                 if self.eval_mode and fold != -1 and i != fold:
                     continue
                 network = self.networks[i]        
-                output = network(X)
+                output = network(X, X_age_group, X_gender)
                 output_s = torch.sigmoid(output)
                 prob_for_net = torch.mean(output_s) 
                 probs.append(prob_for_net.item())
@@ -261,7 +323,7 @@ class Model(object):
         
         if brazil_prob < 0.5:
             final_prob *= 0.001
-        #print('final prob (corrected):', final_prob)
+            #print('final prob (corrected):', final_prob)
 
         binary_output = final_prob >= 0.5
         return binary_output, final_prob
